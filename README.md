@@ -40,14 +40,26 @@ Sin `-o`, imprime por stdout.
 
 ## Modo interactivo (TUI)
 
-El flag `--tui` abre un editor sobre la imagen, con **preview en vivo**: ajustás los
-parámetros con el teclado y ves el resultado al instante, sin recompilar.
+Al ejecutar la herramienta **sin argumentos** arranca en la pantalla de bienvenida
+(título + logo), desde donde eliges la imagen con un **selector de archivos** y pasas
+al editor:
+
+```bash
+cargo run --release            # bienvenida → selector → editor
+```
+
+También puedes abrir el editor directamente sobre una imagen con `--tui`, con **preview
+en vivo**: ajustas los parámetros con el teclado y ves el resultado al instante.
 
 ```bash
 cargo run --release -- entrada.png --tui
 # o partiendo de un preset:
 cargo run --release -- entrada.png --preset logo --tui
 ```
+
+Flujo: **Bienvenida** (`Enter` para elegir) → **Selector** (`↑↓` mover, `Enter`
+abrir/elegir, `⌫` subir carpeta) → **Editor**. En el editor, `Esc` vuelve al selector
+para cargar otra imagen.
 
 Controles:
 

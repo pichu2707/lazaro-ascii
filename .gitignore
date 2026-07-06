@@ -1,0 +1,7 @@
+/target
+
+# Tooling de agentes IA (skill registry, SDD)
+.atl/
+
+# Salidas generadas por el conversor
+*.ans
