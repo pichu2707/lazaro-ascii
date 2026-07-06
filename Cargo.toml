@@ -2,8 +2,20 @@
 name = "lazarobox-ascii"
 version = "0.1.0"
 edition = "2024"
+description = "Conversor de imágenes a arte de terminal (ASCII, Braille, bloques) con CLI y TUI."
+repository = "https://github.com/pichu2707/lazaro-scii"
+homepage = "https://github.com/pichu2707/lazaro-scii"
+license = "MIT"
+readme = "README.md"
+keywords = ["ascii", "ascii-art", "braille", "tui", "image"]
+categories = ["command-line-utilities", "multimedia::images"]
 
 [dependencies]
 image = "0.25"
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
