@@ -47,8 +47,8 @@ adaptador encima. El diseño separa tres ejes independientes:
 Necesitás [Rust](https://rustup.rs) (edición 2024).
 
 ```bash
-git clone https://github.com/pichu2707/lazaro-scii.git
-cd lazaro-scii
+git clone https://github.com/pichu2707/lazaro-ascii.git
+cd lazaro-ascii
 
 # Compilar en modo release
 cargo build --release
