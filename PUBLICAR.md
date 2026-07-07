@@ -98,12 +98,23 @@ curl -LsSf https://github.com/pichu2707/lazaro-scii/releases/download/v0.1.0/laz
 
 ## Publicar versiones futuras
 
-1. Sube la versión en `Cargo.toml` (p. ej. `version = "0.2.0"`).
-2. `git commit` de los cambios y `git push`.
-3. `cargo publish` (para crates.io).
-4. `git tag v0.2.0 && git push origin v0.2.0` (para binarios + Homebrew).
+El tag ahora se crea **solo**. Solo tienes que cambiar el número de versión:
 
-`dist` y la fórmula se actualizan solos con cada tag.
+1. Sube la versión en `Cargo.toml` (p. ej. `version = "0.2.0"`).
+2. `git commit` de los cambios y `git push` a `main`.
+   - El workflow **Auto Tag on Version Bump** detecta el cambio de versión,
+     crea el tag `v0.2.0` y lo pushea.
+   - Ese tag dispara **Release**: binarios, instalador y fórmula de Homebrew,
+     todo con la versión nueva.
+3. `cargo publish` (para crates.io) — este paso sigue siendo manual a propósito:
+   una versión publicada en crates.io **no se puede borrar**, así que no se automatiza.
+
+No hay que escribir el tag a mano. Cambias el número donde ya lo cambiabas
+(`Cargo.toml`) y el resto cae en cascada.
+
+> El auto-tag pushea el tag con `HOMEBREW_TAP_TOKEN` (un PAT), no con el
+> `GITHUB_TOKEN` por defecto. Es obligatorio: un tag creado con `GITHUB_TOKEN`
+> **no dispara** el workflow de Release (GitHub lo bloquea para evitar bucles).
 
 ---
 
@@ -114,3 +125,8 @@ curl -LsSf https://github.com/pichu2707/lazaro-scii/releases/download/v0.1.0/laz
   se llame exactamente `HOMEBREW_TAP_TOKEN`.
 - **Quieres probar sin publicar** → `cargo publish --dry-run` (crates.io) y `dist plan`
   (release) muestran qué pasaría sin subir nada.
+- **Cambiaste la versión pero no apareció el tag** → mira la pestaña **Actions**, workflow
+  **Auto Tag on Version Bump**. Si falla por permisos, el `HOMEBREW_TAP_TOKEN` caducó:
+  renueva el token (scope `repo`) y actualiza el secret.
+- **El tag se creó pero no hubo Release** → señal de que el tag se pusheó con el token
+  equivocado. El auto-tag debe usar `HOMEBREW_TAP_TOKEN` (PAT), no `GITHUB_TOKEN`.

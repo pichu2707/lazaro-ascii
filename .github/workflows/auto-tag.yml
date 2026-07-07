@@ -1,0 +1,57 @@
+name: Auto Tag on Version Bump
+
+# Watches the package version in Cargo.toml on `main`.
+# When the version changes, it creates and pushes the matching `vX.Y.Z` tag,
+# which in turn triggers the existing Release workflow (binaries + Homebrew).
+#
+# IMPORTANT: the tag is pushed with a Personal Access Token (HOMEBREW_TAP_TOKEN),
+# NOT the default GITHUB_TOKEN. Tags pushed with GITHUB_TOKEN do NOT trigger
+# other workflows (GitHub blocks that to avoid recursion), so the Release
+# workflow would never fire. The PAT is what makes the cascade work.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+
+permissions:
+  contents: write
+
+jobs:
+  auto-tag:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          # PAT so that pushing the tag triggers the Release workflow.
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Read package version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(awk '/^\[/{s=$0} s=="[package]" && /^version[[:space:]]*=/ {gsub(/.*=[[:space:]]*"/,""); gsub(/".*/,""); print; exit}' Cargo.toml)
+          if [ -z "$VERSION" ]; then
+            echo "Could not read [package] version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Create and push tag if it does not exist
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
+            echo "Tag ${TAG} already exists — nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${TAG}"
+          echo "Pushed ${TAG} — Release workflow will now build and publish."
