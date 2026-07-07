@@ -5,3 +5,6 @@
 
 # Salidas generadas por el conversor
 *.ans
+
+# Artefactos de release descargados (curl del instalador)
+*.tar.gz
