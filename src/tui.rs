@@ -1,6 +1,6 @@
 use image::DynamicImage;
 use lazarobox_ascii::converter::{Canvas, Glyph, Options, convert_canvas};
-use lazarobox_ascii::to_ansi_shaded;
+use lazarobox_ascii::{Direction, Effect, Rgb, Style as ArtStyle, color_at, export, to_ansi_gradient};
 use ratatui::crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -12,7 +12,7 @@ use std::error::Error;
 use std::fs;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Piso de brillo del preview (mismo criterio que el export sombreado).
 const SHADE_FLOOR: f32 = 0.30;
@@ -24,14 +24,32 @@ const TITLE: &str = include_str!("assets/title.txt");
 /// PNG del camaleón embebido; se rasteriza a Canvas sombreado en el arranque.
 const CAM_BYTES: &[u8] = include_bytes!("assets/camaleon.png");
 
-/// Paleta de colores de acento seleccionables en el editor.
-const PALETTE: &[(&str, Color)] = &[
-    ("Cyan", Color::Rgb(0, 229, 255)),
-    ("Verde", Color::Rgb(0, 255, 128)),
-    ("Magenta", Color::Rgb(255, 0, 200)),
-    ("Amarillo", Color::Rgb(255, 214, 0)),
-    ("Naranja", Color::Rgb(255, 120, 0)),
-    ("Blanco", Color::Rgb(235, 235, 235)),
+/// Gradientes curados seleccionables en el editor. Elegir "más de un color" en una TUI
+/// se resuelve mejor con presets que editando paradas a mano.
+const GRADIENTS: &[(&str, &[Rgb])] = &[
+    ("Cyan", &[(0, 229, 255)]),
+    ("Verde", &[(0, 255, 128)]),
+    ("Cyan→Púrpura", &[(0, 229, 255), (185, 155, 242)]),
+    ("Cyan→Azul→Púrpura", &[(0, 229, 255), (127, 180, 202), (185, 155, 242)]),
+    ("Verde→Amarillo", &[(0, 255, 128), (255, 214, 0)]),
+    ("Magenta→Cyan", &[(255, 0, 200), (0, 229, 255)]),
+    ("Fuego", &[(255, 214, 0), (255, 120, 0), (255, 0, 200)]),
+    ("Hielo", &[(235, 235, 235), (127, 180, 202), (0, 229, 255)]),
+];
+
+const DIRECTIONS: [Direction; 4] = [
+    Direction::Horizontal,
+    Direction::Vertical,
+    Direction::Diagonal,
+    Direction::Radial,
+];
+
+const EFFECTS: [Effect; 5] = [
+    Effect::None,
+    Effect::Scroll,
+    Effect::Pulse,
+    Effect::Wave,
+    Effect::Hue,
 ];
 
 const GLYPHS: [Glyph; 3] = [Glyph::Ascii, Glyph::Braille, Glyph::Blocks];
@@ -46,18 +64,15 @@ README    80   ASCII
 Banner   120   Blocks
 Logo      60   Braille
 
-Para calidad
-• +cols = +detalle.
-• d = dither: sombra
-  por densidad de
-  puntos.
-• Sombreado por color
-  según luz de la zona.
-• El fondo transparente
-  se respeta.
-• Sujeto claro sobre
-  fondo oscuro: sin
-  invertir.";
+Color y efectos
+• c = gradiente (1+ tonos)
+• x = dirección
+• f = efecto (anima el
+  preview; se hornea en
+  el .ans en t=0)
+• , . = velocidad
+• s exporta txt+ans+
+  json+rs (embebible).";
 
 /// Extensiones de imagen reconocidas por el selector.
 fn is_image(p: &Path) -> bool {
@@ -126,19 +141,23 @@ fn grad(t: f32) -> Color {
     Color::Rgb(lerp(r1, r2, f), lerp(g1, g2, f), lerp(b1, b2, f))
 }
 
-/// Construye el preview con sombreado por celda: cada carácter con su tono.
-fn preview_text(canvas: &Canvas, accent: Color) -> Text<'static> {
-    let mut lines = Vec::with_capacity(canvas.height as usize);
-    for y in 0..canvas.height {
-        let mut spans = Vec::with_capacity(canvas.width as usize);
-        for x in 0..canvas.width {
-            let c = canvas.cells[y as usize * canvas.width as usize + x as usize];
+/// Construye el preview aplicando el estilo de color completo (gradiente + efecto)
+/// en el instante `t`. Usa el MISMO `color_at` que el export, así lo que ves es lo
+/// que se guarda.
+fn preview_text(canvas: &Canvas, style: &ArtStyle, t: f32) -> Text<'static> {
+    let (w, h) = (canvas.width, canvas.height);
+    let mut lines = Vec::with_capacity(h as usize);
+    for y in 0..h {
+        let mut spans = Vec::with_capacity(w as usize);
+        for x in 0..w {
+            let c = canvas.cells[y as usize * w as usize + x as usize];
             if c.ch == ' ' || c.luma == 0 {
                 spans.push(Span::raw(" "));
             } else {
+                let (r, g, b) = color_at(style, c.luma, x, y, w, h, t);
                 spans.push(Span::styled(
                     c.ch.to_string(),
-                    Style::default().fg(shade(accent, c.luma)),
+                    Style::default().fg(Color::Rgb(r, g, b)),
                 ));
             }
         }
@@ -169,7 +188,10 @@ struct Editor {
     threshold: u8,
     invert: bool,
     dither: bool,
-    color_idx: usize,
+    grad_idx: usize,
+    dir_idx: usize,
+    effect_idx: usize,
+    speed: f32,
     show_guide: bool,
     canvas: Canvas,
     status: String,
@@ -186,7 +208,10 @@ impl Editor {
             threshold: start.threshold,
             invert: start.invert,
             dither: start.dither,
-            color_idx: 1, // Verde por defecto
+            grad_idx: 3,  // Cyan→Azul→Púrpura (marca)
+            dir_idx: 2,   // diagonal
+            effect_idx: 0, // sin animación
+            speed: 1.0,
             show_guide: true,
             canvas: Canvas {
                 width: 0,
@@ -210,6 +235,20 @@ impl Editor {
         }
     }
 
+    /// Estilo de color actual (gradiente + dirección + efecto + velocidad).
+    fn style(&self) -> ArtStyle {
+        ArtStyle {
+            colors: GRADIENTS[self.grad_idx].1.to_vec(),
+            direction: DIRECTIONS[self.dir_idx],
+            effect: EFFECTS[self.effect_idx],
+            speed: self.speed,
+        }
+    }
+
+    fn animating(&self) -> bool {
+        self.effect_idx != 0
+    }
+
     fn rerender(&mut self) {
         self.canvas = convert_canvas(&self.img, &self.opts());
     }
@@ -219,24 +258,29 @@ impl Editor {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("output");
+        let style = self.style();
         let txt = format!("{stem}.txt");
         let ans = format!("{stem}.ans");
-        let ansi = to_ansi_shaded(&self.canvas, rgb_of(PALETTE[self.color_idx].1));
-        match (
+        let json = format!("{stem}.json");
+        let rs = format!("{stem}.rs");
+        let ok = [
             fs::write(&txt, self.canvas.to_mono()),
-            fs::write(&ans, &ansi),
-        ) {
-            (Ok(_), Ok(_)) => {
-                let dir = std::env::current_dir()
-                    .map(|d| d.display().to_string())
-                    .unwrap_or_else(|_| ".".into());
-                self.status = format!("✓ Guardado en {dir}/  →  {txt}  +  {ans}");
-                self.status_ok = Some(true);
-            }
-            _ => {
-                self.status = "✗ Error al exportar".into();
-                self.status_ok = Some(false);
-            }
+            fs::write(&ans, to_ansi_gradient(&self.canvas, &style, 0.0)),
+            fs::write(&json, export::to_json(&self.canvas, &style)),
+            fs::write(&rs, export::to_rust(&self.canvas, &style)),
+        ]
+        .iter()
+        .all(|r| r.is_ok());
+
+        if ok {
+            let dir = std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|_| ".".into());
+            self.status = format!("✓ {dir}/  →  {txt} + {ans} + {json} + {rs}");
+            self.status_ok = Some(true);
+        } else {
+            self.status = "✗ Error al exportar".into();
+            self.status_ok = Some(false);
         }
     }
 }
@@ -251,6 +295,8 @@ struct App {
     pick_status: String,
     /// Contador de frames para animar la bienvenida.
     tick: u64,
+    /// Reloj de arranque para la animación en tiempo real del editor.
+    started: Instant,
     /// Camaleón de la bienvenida, rasterizado con sombreado por celda.
     splash: Canvas,
 }
@@ -286,6 +332,7 @@ impl App {
             start,
             pick_status: String::new(),
             tick: 0,
+            started: Instant::now(),
             splash,
         }
     }
@@ -391,9 +438,11 @@ fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App) -> Result<(), B
     loop {
         term.draw(|f| ui(f, app))?;
 
-        // La bienvenida se anima: si no hay tecla en 80ms, avanza un frame y redibuja.
-        // El resto de pantallas bloquean (sin gasto de CPU).
-        if matches!(app.screen, Screen::Splash) && !event::poll(Duration::from_millis(80))? {
+        // Se anima (redibuja cada 80ms) la bienvenida y el editor con un efecto activo.
+        // El resto bloquea en el evento (sin gasto de CPU).
+        let animating = matches!(app.screen, Screen::Splash)
+            || matches!((&app.screen, &app.editor), (Screen::Editor, Some(ed)) if ed.animating());
+        if animating && !event::poll(Duration::from_millis(80))? {
             app.tick = app.tick.wrapping_add(1);
             continue;
         }
@@ -447,7 +496,11 @@ fn handle_editor_key(ed: &mut Editor, code: KeyCode) {
             ed.glyph_idx = (ed.glyph_idx + 1) % GLYPHS.len();
             ed.rerender();
         }
-        KeyCode::Char('c') => ed.color_idx = (ed.color_idx + 1) % PALETTE.len(),
+        KeyCode::Char('c') => ed.grad_idx = (ed.grad_idx + 1) % GRADIENTS.len(),
+        KeyCode::Char('x') => ed.dir_idx = (ed.dir_idx + 1) % DIRECTIONS.len(),
+        KeyCode::Char('f') => ed.effect_idx = (ed.effect_idx + 1) % EFFECTS.len(),
+        KeyCode::Char(',') => ed.speed = (ed.speed - 0.25).max(0.1),
+        KeyCode::Char('.') => ed.speed = (ed.speed + 0.25).min(8.0),
         KeyCode::Char('d') => {
             ed.dither = !ed.dither;
             ed.rerender();
@@ -484,7 +537,8 @@ fn ui(f: &mut Frame, app: &App) {
         Screen::Picker => picker_ui(f, app),
         Screen::Editor => {
             if let Some(ed) = app.editor.as_ref() {
-                editor_ui(f, ed);
+                let t = app.started.elapsed().as_secs_f32();
+                editor_ui(f, ed, t);
             }
         }
     }
@@ -638,26 +692,28 @@ fn picker_ui(f: &mut Frame, app: &App) {
     );
 }
 
-fn editor_ui(f: &mut Frame, ed: &Editor) {
-    let rows = Layout::vertical([Constraint::Min(3), Constraint::Length(4)]).split(f.area());
+fn editor_ui(f: &mut Frame, ed: &Editor, t: f32) {
+    let rows = Layout::vertical([Constraint::Min(3), Constraint::Length(5)]).split(f.area());
 
-    let accent = PALETTE[ed.color_idx].1;
-    let preview = Paragraph::new(preview_text(&ed.canvas, accent))
+    let style = ed.style();
+    let preview = Paragraph::new(preview_text(&ed.canvas, &style, t))
         .block(Block::bordered().title(format!(" {} ", ed.name)));
 
     if ed.show_guide {
-        let top = Layout::horizontal([Constraint::Min(20), Constraint::Length(25)]).split(rows[0]);
+        let top = Layout::horizontal([Constraint::Min(20), Constraint::Length(27)]).split(rows[0]);
         f.render_widget(preview, top[0]);
         let guide = Paragraph::new(GUIDE)
-            .block(Block::bordered().title(" valores recomendados "))
+            .block(Block::bordered().title(" guía "))
             .style(Style::default().fg(Color::Gray));
         f.render_widget(guide, top[1]);
     } else {
         f.render_widget(preview, rows[0]);
     }
 
-    let cname = PALETTE[ed.color_idx].0;
-    let controls = Line::from(vec![
+    let grad_name = GRADIENTS[ed.grad_idx].0;
+    let dir_name = DIRECTIONS[ed.dir_idx].as_str();
+    let eff_name = EFFECTS[ed.effect_idx].as_str();
+    let line1 = Line::from(vec![
         Span::styled("g", Style::default().fg(Color::Yellow)),
         format!(" glifo:{}  ", glyph_name(GLYPHS[ed.glyph_idx])).into(),
         Span::styled("←→", Style::default().fg(Color::Yellow)),
@@ -667,15 +723,21 @@ fn editor_ui(f: &mut Frame, ed: &Editor) {
         Span::styled("d", Style::default().fg(Color::Yellow)),
         format!(" dither:{}  ", if ed.dither { "sí" } else { "no" }).into(),
         Span::styled("i", Style::default().fg(Color::Yellow)),
-        format!(" invertir:{}  ", if ed.invert { "sí" } else { "no" }).into(),
+        format!(" invertir:{}", if ed.invert { "sí" } else { "no" }).into(),
+    ]);
+    let line2 = Line::from(vec![
         Span::styled("c", Style::default().fg(Color::Yellow)),
-        format!(" color:{cname}  ").into(),
-        Span::styled("h", Style::default().fg(Color::Yellow)),
-        format!(" guía:{}  ", if ed.show_guide { "sí" } else { "no" }).into(),
+        format!(" color:{grad_name}  ").into(),
+        Span::styled("x", Style::default().fg(Color::Yellow)),
+        format!(" dir:{dir_name}  ").into(),
+        Span::styled("f", Style::default().fg(Color::Yellow)),
+        format!(" efecto:{eff_name}  ").into(),
+        Span::styled(",.", Style::default().fg(Color::Yellow)),
+        format!(" vel:{:.2}  ", ed.speed).into(),
         Span::styled("s", Style::default().fg(Color::Green)),
         " exportar  ".into(),
         Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        " otra imagen  ".into(),
+        " atrás  ".into(),
         Span::styled("q", Style::default().fg(Color::Red)),
         " salir".into(),
     ]);
@@ -686,7 +748,7 @@ fn editor_ui(f: &mut Frame, ed: &Editor) {
     };
     let status = Line::from(ed.status.clone()).style(status_style);
     f.render_widget(
-        Paragraph::new(vec![controls, status]).block(Block::bordered().title(" controles ")),
+        Paragraph::new(vec![line1, line2, status]).block(Block::bordered().title(" controles ")),
         rows[1],
     );
 }

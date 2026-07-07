@@ -1,6 +1,6 @@
 [package]
 name = "lazarobox-ascii"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Conversor de imágenes a arte de terminal (ASCII, Braille, bloques) con CLI y TUI."
 repository = "https://github.com/pichu2707/lazaro-ascii"
@@ -9,6 +9,7 @@ license = "MIT"
 readme = "README.md"
 keywords = ["ascii", "ascii-art", "braille", "tui", "image"]
 categories = ["command-line-utilities", "multimedia::images"]
+exclude = ["aguila.txt", "PUBLICAR.md", "img/"]
 
 [dependencies]
 image = "0.25"
